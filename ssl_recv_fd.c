@@ -26,34 +26,31 @@
 #include <netinet/in.h>
 #include <sys/un.h>
 
-#define TEST_UNIX_SOCK_PASSING  1
-//#undef TEST_UNIX_SOCK_PASSING
-
-
 /*---------------------------------------------------------------------*/
-/*--- open_listener - create server socket                          ---*/
+/*--- open_unix_sock_listener - create server socket                ---*/
 /*---------------------------------------------------------------------*/
-int open_listener(int port)
+int open_unix_sock_listener(char *unix_sock)
 {
-    int sd;
-    struct sockaddr_in addr;
+    int listen_fd;
+    if ((listen_fd = socket(AF_LOCAL, SOCK_STREAM, 0)) < 0) {
+//    if ((listen_fd = socket(PF_UNIX, SOCK_DGRAM, 0)) < 0) {
+        perror("socket");
+        return -1;
+    }
 
-    sd = socket(AF_INET, SOCK_STREAM, 0);
-    bzero(&addr, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr.s_addr = INADDR_ANY;
-    if ( bind(sd, (struct sockaddr*)&addr, sizeof(addr)) != 0 )
-    {
-        perror("can't bind port");
-        abort();
-    }
-    if ( listen(sd, 10) != 0 )
-    {
-        perror("Can't configure listening port");
-        abort();
-    }
-    return sd;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+//    strcpy(addr.sun_path, SERVER_SOCK_FILE);
+    strcpy(addr.sun_path, unix_sock);
+    printf("listening on sock ; %s\n",unix_sock);
+    unlink(SERVER_SOCK_FILE);
+
+    bind(listen_fd, (struct sockaddr *) &addr, sizeof(addr));
+    
+    listen(listen_fd,MAX_LISTEN_NUM);
+
+    return listen_fd;
 }
 
 /*---------------------------------------------------------------------*/
@@ -180,12 +177,13 @@ void server_handler(SSL* ssl)   /* Serve the connection -- threadable */
     char buf[1024];
     char reply[1280];
     int sd, bytes;
-
+ 
     if (FAIL == SSL_accept(ssl))                    /* do SSL-protocol accept */
     {
         ERR_print_errors_fp(stderr);   
     }
     else
+
     {
         show_certs_info(ssl);                       /* get any certificates */
         bytes = SSL_read(ssl, buf, sizeof(buf)-1);  /* get request */
@@ -208,61 +206,6 @@ void server_handler(SSL* ssl)   /* Serve the connection -- threadable */
     close(sd);                          /* close connection */
 }
 
-
-#ifdef TEST_UNIX_SOCK_PASSING
-
-/*---------------------------------------------------------------------*/
-/*--- create a new unix socket to passing fd                        ---*/
-/*---------------------------------------------------------------------*/
-
-int create_unix_sock(void) {
-
-    int fd;
-    if ((fd = socket(AF_LOCAL, SOCK_STREAM, 0)) < 0) {
-//    if ((fd = socket(PF_UNIX, SOCK_DGRAM, 0)) < 0) {
-        perror("socket");
-        return -1;
-    }
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, CLIENT_SOCK_FILE);
-    unlink(CLIENT_SOCK_FILE);
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("bind");
-        return -1;
-    }
-    return fd;
-} 
-
-/*-----------------------------------------------------------------------------------*/
-/*--- always connect a new connection between two processes by unix domain socket ---*/
-/*------------------------------------------------------------------------------------*/
-
-int connect_unix_domain_socket(int fd) {
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));  
-    addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, SERVER_SOCK_FILE);  
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) { 
-         perror("connect");   
-         return -1;
-    }
-    return 1;
-}
-
-/*---------------------------------------------------------------------*/
-/*--- test for https ssl fd paasing                                ---*/
-/*---------------------------------------------------------------------*/
-
-void test_for_fd_passing(int sock, int fd) {
-
-    send_fd(sock, fd);
-
-}
-#endif
-
 /*---------------------------------------------------------------------*/
 /*--- main - create SSL socket server.                              ---*/
 /*---------------------------------------------------------------------*/
@@ -270,52 +213,39 @@ int main(int count, char *strings[])
 {
     SSL_CTX *ctx;
     int server;
-    char *portnum;
+    char *unix_sock;
 
     if ( count != 2 )
     {
-        printf("Usage: %s <portnum>\n", strings[0]);
+        printf("Usage: %s <unix_sock>\n", strings[0]);
         exit(0);
     }
-    portnum = strings[1];
+    unix_sock = strings[1];
     ctx = init_server_ctx();                                        /* initialize SSL */
     load_certificates(ctx, ROOTCERTF, SERVER_CERT, SERVER_KEYF);    /* load certs */
-    server = open_listener(atoi(portnum));                          /* create server socket */
+    server = open_unix_sock_listener(unix_sock);                          /* create server socket */
 
-    int sock = create_unix_sock();
-    printf("create_unix_sock = %d \n",sock);
-    if(sock < 0)
+    struct sockaddr_in addr;
+    memset(&addr, '\0', sizeof(struct sockaddr_in));
+    socklen_t len = sizeof(addr);
+    SSL *ssl;
+    /* accept connection as usual */
+    int client = accept(server, (struct sockaddr*)&addr, &len);
+    if(client < 0)
     {
-        printf("create unix sock error \n");
+        printf("accept failure %s\n",strerror(errno));
         return -1;
     }
-    connect_unix_domain_socket(sock);
+    printf("Connection: %s:%d\n",
+        inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
 
     while (1)
     {   
-        struct sockaddr_in addr;
-        memset(&addr, '\0', sizeof(struct sockaddr_in));
-        socklen_t len = sizeof(addr);
-        SSL *ssl;
-        /* accept connection as usual */
-        int client = accept(server, (struct sockaddr*)&addr, &len);
-        if(client < 0)
-        {
-            printf("accept failure %s\n",strerror(errno));
-            break;
-        }
-        printf("Connection: %s:%d\n",
-               	inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
+        int fd = receive_fd(client);
 
-        printf("accept client fd = %d \n",client);
-#ifdef TEST_UNIX_SOCK_PASSING
-
-        test_for_fd_passing(sock,client);
-#else
         ssl = SSL_new(ctx);             /* get new SSL state with context */
-        SSL_set_fd(ssl, client);        /* set connection socket to SSL state */
+        SSL_set_fd(ssl, fd);        /* set connection socket to SSL state */
         server_handler(ssl);            /* service connection */
-#endif
     }
     close(server);                      /* close server socket */
     SSL_CTX_free(ctx);                  /* release context */

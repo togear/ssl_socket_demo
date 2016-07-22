@@ -296,7 +296,6 @@ int main(int count, char *strings[])
         struct sockaddr_in addr;
         memset(&addr, '\0', sizeof(struct sockaddr_in));
         socklen_t len = sizeof(addr);
-        SSL *ssl;
         /* accept connection as usual */
         int client = accept(server, (struct sockaddr*)&addr, &len);
         if(client < 0)
@@ -312,6 +311,7 @@ int main(int count, char *strings[])
 
         test_for_fd_passing(sock,client);
 #else
+        SSL *ssl;
         ssl = SSL_new(ctx);             /* get new SSL state with context */
         SSL_set_fd(ssl, client);        /* set connection socket to SSL state */
         server_handler(ssl);            /* service connection */

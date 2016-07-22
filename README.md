@@ -42,4 +42,3 @@ $ openssl x509 -req -days 3650 -sha1 -extensions v3_req -CA root.crt -CAkey root
 # PFX格式供客户端安装
 $ openssl pkcs12 -export -in client.crt -inkey client.key -out client.pfx
 ```
-
